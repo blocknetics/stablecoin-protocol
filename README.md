@@ -4,18 +4,88 @@ A collateral-backed stablecoin protocol on Solana, built with Anchor. Deposit SO
 
 ## Architecture
 
+```mermaid
+graph TB
+    User["👤 User"] -->|"open_vault / deposit / withdraw"| Vaults
+    User -->|"close_vault"| Vaults
+    Liquidator["⚡ Liquidator"] -->|"liquidate"| Liq
+    Swapper["🔄 Swapper"] -->|"psm_swap_in / out"| PSM
+    FlashUser["💨 Flash Borrower"] -->|"flash_mint"| Flash
+    Admin["🔑 Authority"] -->|"update_interest_rate / oracle"| Gov
+    Admin -->|"emergency_shutdown"| Emerg
+
+    subgraph program ["Stablecoin Program (Solana / Anchor)"]
+        Vaults["🏦 Vaults<br/><i>open · close · deposit · withdraw</i>"]
+        Liq["⚡ Liquidation<br/><i>Under-collateralized + 5% bonus</i>"]
+        Flash["💨 Flash Mint<br/><i>Borrow + repay same tx</i>"]
+        PSM["🔄 PSM<br/><i>USDC ↔ Stable 1:1 minus fee</i>"]
+        Gov["⚙️ Governance<br/><i>Interest rate · Oracle price</i>"]
+        Emerg["🚨 Emergency<br/><i>Freeze all operations</i>"]
+    end
+
+    subgraph accounts ["PDA Accounts"]
+        Config["📋 ProtocolConfig<br/><i>PDA: [config]</i>"]
+        Vault["🔒 Vault<br/><i>PDA: [vault, owner]</i>"]
+        PsmRes["💱 PsmReserve<br/><i>PDA: [psm-reserve]</i>"]
+    end
+
+    Vaults --> Config
+    Vaults --> Vault
+    Liq --> Vault
+    PSM --> PsmRes
+    Gov --> Config
+
+    style program fill:#1e1b4b,stroke:#6366f1,color:#c7d2fe
+    style accounts fill:#162c1e,stroke:#22c55e,color:#bbf7d0
+    style Config fill:#0f766e,stroke:#2dd4bf,color:#fff
+    style Vault fill:#7c3aed,stroke:#a78bfa,color:#fff
+    style PsmRes fill:#92400e,stroke:#fbbf24,color:#fff
 ```
-┌───────────────────────────────────────────────────────────┐
-│                    Stablecoin Program                      │
-├─────────────┬──────────────┬──────────────┬───────────────┤
-│   Vaults    │  Liquidation │  Flash Mint  │     PSM       │
-│ open/close  │  under-coll. │  borrow+repay│  USDC ↔ Stable│
-│ deposit/    │  w/ bonus    │  same tx     │  1:1 minus fee│
-│ withdraw    │              │              │               │
-├─────────────┴──────────────┴──────────────┴───────────────┤
-│              Governance  │  Emergency Shutdown             │
-│  interest rate / oracle  │  freeze all operations          │
-└───────────────────────────────────────────────────────────┘
+
+## Vault Lifecycle Workflow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Program as Stablecoin Program
+    participant Config as ProtocolConfig (PDA)
+    participant Vault as Vault (PDA)
+    participant Mint as Stablecoin Mint
+
+    rect rgb(30, 27, 75)
+    Note over User,Vault: 1 — Open Vault
+    User->>Program: open_vault(collateral, mint_amount)
+    Program->>Config: Check collateral ratio ≥ 150%
+    Program->>Vault: Create PDA [vault, owner]
+    User-->>Vault: Transfer SOL collateral
+    Program->>Mint: Mint stablecoins to user
+    end
+
+    rect rgb(30, 58, 38)
+    Note over User,Vault: 2 — Manage Position
+    User->>Program: deposit_collateral(amount)
+    User-->>Vault: Additional SOL deposited
+    User->>Program: withdraw_collateral(amount)
+    Program->>Config: Verify ratio still ≥ 150%
+    Vault-->>User: SOL returned
+    end
+
+    rect rgb(60, 20, 20)
+    Note over User,Mint: 3a — Close Vault (happy path)
+    User->>Program: close_vault()
+    User->>Mint: Burn all debt stablecoins
+    Vault-->>User: Reclaim all SOL collateral
+    Program->>Vault: Close account
+    end
+
+    rect rgb(55, 48, 20)
+    Note over User,Mint: 3b — Liquidation (ratio < 120%)
+    participant Liquidator
+    Liquidator->>Program: liquidate(vault)
+    Program->>Config: Confirm ratio < 120%
+    Liquidator->>Mint: Burn debt stablecoins
+    Vault-->>Liquidator: Collateral + 5% bonus
+    end
 ```
 
 ## Features
